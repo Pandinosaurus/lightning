@@ -27,10 +27,10 @@ To track a metric, simply use the *self.log* method available inside the *Lightn
 
 .. code-block:: python
 
-    class LitModel(pl.LightningModule):
+    class LitModel(L.LightningModule):
         def training_step(self, batch, batch_idx):
-            value = self.global_step
-            self.log("some_value", self.global_step)
+            value = ...
+            self.log("some_value", value)
 
 To log multiple metrics at once, use *self.log_dict*
 
@@ -39,7 +39,7 @@ To log multiple metrics at once, use *self.log_dict*
     values = {"loss": loss, "acc": acc, "metric_n": metric_n}  # add more items if needed
     self.log_dict(values)
 
-TODO: show plot of metric changing over time
+.. TODO:: show plot of metric changing over time
 
 ----
 
@@ -50,21 +50,24 @@ To view metrics in the commandline progress bar, set the *prog_bar* argument to 
 
 .. code-block:: python
 
-    self.log(prog_bar=True)
+    self.log(..., prog_bar=True)
 
-TODO: need progress bar here
+
+.. code-block:: bash
+
+    Epoch 3:  33%|███▉        | 307/938 [00:01<00:02, 289.04it/s, loss=0.198, v_num=51, acc=0.211, metric_n=0.937]
 
 ----
 
 View in the browser
 ===================
-To view metrics in the browser you need to use an *experiment manager* with these capabilities. By Default, Lightning uses Tensorboard which is free and opensource.
+To view metrics in the browser you need to use an *experiment manager* with these capabilities.
 
-Tensorboard is already enabled by default
+By Default, Lightning uses Tensorboard (if available) and a simple CSV logger otherwise.
 
 .. code-block:: python
 
-    # every trainer already has tensorboard enabled by default
+    # every trainer already has tensorboard enabled by default (if the dependency is available)
     trainer = Trainer()
 
 To launch the tensorboard dashboard run the following command on the commandline.
@@ -86,7 +89,9 @@ Accumulate a metric
 ===================
 When *self.log* is called inside the *training_step*, it generates a timeseries showing how the metric behaves over time.
 
-TODO: show chart
+.. figure:: https://pl-public-data.s3.amazonaws.com/assets_lightning/logging_basic/visualize_logging_basic_tensorboard_chart.png
+    :alt: TensorBoard chart of a metric logged with self.log
+    :width: 100 %
 
 However, For the validation and test sets we are not generally interested in plotting the metric values per batch of data. Instead, we want to compute a summary statistic (such as average, min or max) across the full split of data.
 
@@ -98,43 +103,18 @@ When you call self.log inside the *validation_step* and *test_step*, Lightning a
         value = batch_idx + 1
         self.log("average_value", value)
 
-TODO: show single point plotted
+.. figure:: https://pl-public-data.s3.amazonaws.com/assets_lightning/logging_basic/visualize_logging_basic_tensorboard_point.png
+    :alt: TensorBoard chart of a metric logged with self.log
+    :width: 100 %
 
 If you don't want to average you can also choose from ``{min,max,sum}`` by passing the *reduce_fx* argument.
 
 .. code-block:: python
 
     # default function
-    self.log(..., reduce_fx=torch.mean)
+    self.log(..., reduce_fx="mean")
 
 For other reductions, we recommend logging a :class:`torchmetrics.Metric` instance instead.
-
-----
-
-************
-Track images
-************
-If your *experiment manager* supports image visualization, simply *log* the image with *self.log*
-
-.. code-block:: python
-
-    # (32 batch samples, 3 channels, 32 width, 32 height)
-    image = torch.Tensor(32, 3, 28, 28)
-    self.log("an_image", image)
-
-----
-
-**********
-Track text
-**********
-If your *experiment manager* supports text visualization, simply *log* the text with *self.log*
-
-.. code-block:: python
-
-    text = "hello world"
-    self.log("some_text", text)
-
-# TODO: show screenshot
 
 ----
 

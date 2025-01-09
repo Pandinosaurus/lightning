@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,17 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-import pytest
-import torch
 import torch.nn as nn
 
-from pytorch_lightning import Callback, Trainer
-from pytorch_lightning.core.mixins import DeviceDtypeModuleMixin
-from pytorch_lightning.demos.boring_classes import BoringModel
+from lightning.fabric.utilities.device_dtype_mixin import _DeviceDtypeModuleMixin
+from lightning.pytorch import Callback, Trainer
+from lightning.pytorch.demos.boring_classes import BoringModel
 from tests_pytorch.helpers.runif import RunIf
 
 
-class SubSubModule(DeviceDtypeModuleMixin):
+class SubSubModule(_DeviceDtypeModuleMixin):
     pass
 
 
@@ -46,55 +44,11 @@ class DeviceAssertCallback(Callback):
         assert model.device == model.module.module.device
 
 
-@pytest.mark.parametrize(
-    "dst_device_str,dst_dtype",
-    [
-        ("cpu", torch.half),
-        ("cpu", torch.float),
-        ("cpu", torch.double),
-        pytest.param("cuda:0", torch.half, marks=RunIf(min_cuda_gpus=1)),
-        pytest.param("cuda:0", torch.float, marks=RunIf(min_cuda_gpus=1)),
-        pytest.param("cuda:0", torch.double, marks=RunIf(min_cuda_gpus=1)),
-        pytest.param("mps:0", torch.float, marks=RunIf(mps=True)),  # double and half are not yet supported.
-    ],
-)
-@RunIf(min_cuda_gpus=1)
-def test_submodules_device_and_dtype(dst_device_str, dst_dtype):
-    """Test that the device and dtype property updates propagate through mixed nesting of regular nn.Modules and
-    the special modules of type DeviceDtypeModuleMixin (e.g. Metric or LightningModule)."""
-
-    dst_device = torch.device(dst_device_str)
-
-    model = TopModule()
-    assert model.device == torch.device("cpu")
-    model = model.to(device=dst_device, dtype=dst_dtype)
-    # nn.Module does not have these attributes
-    assert not hasattr(model.module, "_device")
-    assert not hasattr(model.module, "_dtype")
-    # device and dtype change should propagate down into all children
-    assert model.device == model.module.module.device == dst_device
-    assert model.dtype == model.module.module.dtype == dst_dtype
-
-
 @RunIf(min_cuda_gpus=2)
-def test_submodules_multi_gpu_dp(tmpdir):
+def test_submodules_multi_gpu_ddp_spawn(tmp_path):
     model = TopModule()
     trainer = Trainer(
-        default_root_dir=tmpdir,
-        strategy="dp",
-        accelerator="gpu",
-        devices=2,
-        callbacks=[DeviceAssertCallback()],
-        max_steps=1,
-    )
-    trainer.fit(model)
-
-
-@RunIf(min_cuda_gpus=2)
-def test_submodules_multi_gpu_ddp_spawn(tmpdir):
-    model = TopModule()
-    trainer = Trainer(
-        default_root_dir=tmpdir,
+        default_root_dir=tmp_path,
         strategy="ddp_spawn",
         accelerator="gpu",
         devices=2,
@@ -102,45 +56,3 @@ def test_submodules_multi_gpu_ddp_spawn(tmpdir):
         max_steps=1,
     )
     trainer.fit(model)
-
-
-@pytest.mark.parametrize(
-    "device",
-    [
-        None,  # explicitly call without an index to see if the returning device contains an index
-        0,
-        torch.device("cuda", 0),
-    ],
-)
-@RunIf(min_cuda_gpus=1)
-def test_cuda_device(device):
-    model = TopModule()
-
-    model.cuda(device)
-
-    device = model.device
-    assert device.type == "cuda"
-    assert device.index is not None
-    assert device.index == torch.cuda.current_device()
-
-
-@RunIf(min_cuda_gpus=2)
-def test_cuda_current_device():
-    """Test that calling .cuda() moves the model to the correct device and respects current cuda device setting."""
-
-    class CudaModule(DeviceDtypeModuleMixin):
-        def __init__(self):
-            super().__init__()
-            self.layer = nn.Linear(1, 1)
-
-    model = CudaModule()
-
-    torch.cuda.set_device(0)
-    model.cuda(1)
-    assert model.device == torch.device("cuda", 1)
-    assert model.layer.weight.device == torch.device("cuda", 1)
-
-    torch.cuda.set_device(1)
-    model.cuda()  # model is already on device 1, and calling .cuda() without device index should not move model
-    assert model.device == torch.device("cuda", 1)
-    assert model.layer.weight.device == torch.device("cuda", 1)

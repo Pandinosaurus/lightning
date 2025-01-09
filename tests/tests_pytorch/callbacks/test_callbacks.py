@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,19 +13,18 @@
 # limitations under the License.
 from pathlib import Path
 from re import escape
-from unittest.mock import call, Mock
+from unittest.mock import Mock
 
 import pytest
+from lightning_utilities.test.warning import no_warning_call
 
-from pytorch_lightning import Callback, Trainer
-from pytorch_lightning.callbacks import ModelCheckpoint
-from pytorch_lightning.demos.boring_classes import BoringModel
-from tests_pytorch.helpers.utils import no_warning_call
+from lightning.pytorch import Callback, Trainer
+from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.demos.boring_classes import BoringModel
 
 
-def test_callbacks_configured_in_model(tmpdir):
+def test_callbacks_configured_in_model(tmp_path):
     """Test the callback system with callbacks added through the model hook."""
-
     model_callback_mock = Mock(spec=Callback, model=Callback())
     trainer_callback_mock = Mock(spec=Callback, model=Callback())
 
@@ -34,18 +33,16 @@ def test_callbacks_configured_in_model(tmpdir):
             return [model_callback_mock]
 
     model = TestModel()
-    trainer_options = dict(
-        default_root_dir=tmpdir, enable_checkpointing=False, fast_dev_run=True, enable_progress_bar=False
-    )
+    trainer_options = {
+        "default_root_dir": tmp_path,
+        "enable_checkpointing": False,
+        "fast_dev_run": True,
+        "enable_progress_bar": False,
+    }
 
     def assert_expected_calls(_trainer, model_callback, trainer_callback):
-        # some methods in callbacks configured through model won't get called
-        uncalled_methods = [call.on_init_start(_trainer), call.on_init_end(_trainer)]
-        for uncalled in uncalled_methods:
-            assert uncalled not in model_callback.method_calls
-
         # assert that the rest of calls are the same as for trainer callbacks
-        expected_calls = [m for m in trainer_callback.method_calls if m not in uncalled_methods]
+        expected_calls = [m for m in trainer_callback.method_calls if m]
         assert expected_calls
         assert model_callback.method_calls == expected_calls
 
@@ -77,7 +74,7 @@ def test_callbacks_configured_in_model(tmpdir):
         assert_expected_calls(trainer, model_callback_mock, trainer_callback_mock)
 
 
-def test_configure_callbacks_hook_multiple_calls(tmpdir):
+def test_configure_callbacks_hook_multiple_calls(tmp_path):
     """Test that subsequent calls to `configure_callbacks` do not change the callbacks list."""
     model_callback_mock = Mock(spec=Callback, model=Callback())
 
@@ -86,7 +83,7 @@ def test_configure_callbacks_hook_multiple_calls(tmpdir):
             return model_callback_mock
 
     model = TestModel()
-    trainer = Trainer(default_root_dir=tmpdir, fast_dev_run=True, enable_checkpointing=False)
+    trainer = Trainer(default_root_dir=tmp_path, fast_dev_run=True, enable_checkpointing=False)
 
     callbacks_before_fit = trainer.callbacks.copy()
     assert callbacks_before_fit
@@ -122,66 +119,28 @@ class OldStatefulCallback(Callback):
         self.state = state_dict["state"]
 
 
-def test_resume_callback_state_saved_by_type_stateful(tmpdir):
+def test_resume_callback_state_saved_by_type_stateful(tmp_path):
     """Test that a legacy checkpoint that didn't use a state key before can still be loaded, using
     state_dict/load_state_dict."""
     model = BoringModel()
     callback = OldStatefulCallback(state=111)
-    trainer = Trainer(default_root_dir=tmpdir, max_steps=1, callbacks=[callback])
+    trainer = Trainer(default_root_dir=tmp_path, max_steps=1, callbacks=[callback])
     trainer.fit(model)
     ckpt_path = Path(trainer.checkpoint_callback.best_model_path)
     assert ckpt_path.exists()
 
     callback = OldStatefulCallback(state=222)
-    trainer = Trainer(default_root_dir=tmpdir, max_steps=2, callbacks=[callback])
+    trainer = Trainer(default_root_dir=tmp_path, max_steps=2, callbacks=[callback])
     trainer.fit(model, ckpt_path=ckpt_path)
     assert callback.state == 111
 
 
-class OldStatefulCallbackHooks(Callback):
-    def __init__(self, state):
-        self.state = state
-
-    @property
-    def state_key(self):
-        return type(self)
-
-    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
-        return {"state": self.state}
-
-    def on_load_checkpoint(self, trainer, pl_module, callback_state):
-        self.state = callback_state["state"]
-
-
-def test_resume_callback_state_saved_by_type_hooks(tmpdir):
-    """Test that a legacy checkpoint that didn't use a state key before can still be loaded, using deprecated
-    on_save/load_checkpoint signatures."""
-    # TODO: remove old on_save/load_checkpoint signature support in v1.8
-    # in favor of Stateful and new on_save/load_checkpoint signatures
-    # on_save_checkpoint() -> dict, on_load_checkpoint(callback_state)
-    # will become
-    # on_save_checkpoint() -> None and on_load_checkpoint(checkpoint)
-    model = BoringModel()
-    callback = OldStatefulCallbackHooks(state=111)
-    trainer = Trainer(default_root_dir=tmpdir, max_steps=1, callbacks=[callback])
-    with pytest.deprecated_call():
-        trainer.fit(model)
-    ckpt_path = Path(trainer.checkpoint_callback.best_model_path)
-    assert ckpt_path.exists()
-
-    callback = OldStatefulCallbackHooks(state=222)
-    trainer = Trainer(default_root_dir=tmpdir, max_steps=2, callbacks=[callback])
-    with pytest.deprecated_call():
-        trainer.fit(model, ckpt_path=ckpt_path)
-    assert callback.state == 111
-
-
-def test_resume_incomplete_callbacks_list_warning(tmpdir):
+def test_resume_incomplete_callbacks_list_warning(tmp_path):
     model = BoringModel()
     callback0 = ModelCheckpoint(monitor="epoch")
     callback1 = ModelCheckpoint(monitor="global_step")
     trainer = Trainer(
-        default_root_dir=tmpdir,
+        default_root_dir=tmp_path,
         max_steps=1,
         callbacks=[callback0, callback1],
     )
@@ -189,7 +148,7 @@ def test_resume_incomplete_callbacks_list_warning(tmpdir):
     ckpt_path = trainer.checkpoint_callback.best_model_path
 
     trainer = Trainer(
-        default_root_dir=tmpdir,
+        default_root_dir=tmp_path,
         max_steps=1,
         callbacks=[callback1],  # one callback is missing!
     )
@@ -197,55 +156,9 @@ def test_resume_incomplete_callbacks_list_warning(tmpdir):
         trainer.fit(model, ckpt_path=ckpt_path)
 
     trainer = Trainer(
-        default_root_dir=tmpdir,
+        default_root_dir=tmp_path,
         max_steps=1,
         callbacks=[callback1, callback0],  # all callbacks here, order switched
     )
     with no_warning_call(UserWarning, match="Please add the following callbacks:"):
         trainer.fit(model, ckpt_path=ckpt_path)
-
-
-class AllStatefulCallback(Callback):
-    def __init__(self, state):
-        self.state = state
-
-    @property
-    def state_key(self):
-        return type(self)
-
-    def state_dict(self):
-        return {"new_state": self.state}
-
-    def load_state_dict(self, state_dict):
-        assert state_dict == {"old_state_precedence": 10}
-        self.state = state_dict["old_state_precedence"]
-
-    def on_save_checkpoint(self, trainer, pl_module, checkpoint):
-        return {"old_state_precedence": 10}
-
-    def on_load_checkpoint(self, trainer, pl_module, callback_state):
-        assert callback_state == {"old_state_precedence": 10}
-        self.old_state_precedence = callback_state["old_state_precedence"]
-
-
-def test_resume_callback_state_all(tmpdir):
-    """Test on_save/load_checkpoint state precedence over state_dict/load_state_dict until v1.8 removal."""
-    # TODO: remove old on_save/load_checkpoint signature support in v1.8
-    # in favor of Stateful and new on_save/load_checkpoint signatures
-    # on_save_checkpoint() -> dict, on_load_checkpoint(callback_state)
-    # will become
-    # on_save_checkpoint() -> None and on_load_checkpoint(checkpoint)
-    model = BoringModel()
-    callback = AllStatefulCallback(state=111)
-    trainer = Trainer(default_root_dir=tmpdir, max_steps=1, callbacks=[callback])
-    with pytest.deprecated_call():
-        trainer.fit(model)
-    ckpt_path = Path(trainer.checkpoint_callback.best_model_path)
-    assert ckpt_path.exists()
-
-    callback = AllStatefulCallback(state=222)
-    trainer = Trainer(default_root_dir=tmpdir, max_steps=2, callbacks=[callback])
-    with pytest.deprecated_call():
-        trainer.fit(model, ckpt_path=ckpt_path)
-    assert callback.state == 10
-    assert callback.old_state_precedence == 10

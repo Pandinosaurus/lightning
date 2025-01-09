@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,12 +19,15 @@ import pytest
 import torch
 from fsspec.implementations.local import LocalFileSystem
 
-from pytorch_lightning.demos.boring_classes import BoringModel
-from pytorch_lightning.utilities.cloud_io import get_filesystem
+from lightning.fabric.utilities.cloud_io import get_filesystem
+from lightning.fabric.utilities.imports import _IS_WINDOWS, _TORCH_GREATER_EQUAL_2_4
+from lightning.pytorch.core.module import LightningModule
+from lightning.pytorch.demos.boring_classes import BoringModel
 from tests_pytorch.helpers.advanced_models import BasicGAN, ParityModuleRNN
 from tests_pytorch.helpers.runif import RunIf
 
 
+@pytest.mark.skipif(_IS_WINDOWS and _TORCH_GREATER_EQUAL_2_4, reason="not close on Windows + PyTorch 2.4")
 @pytest.mark.parametrize("modelclass", [BoringModel, ParityModuleRNN, BasicGAN])
 def test_torchscript_input_output(modelclass):
     """Test that scripted LightningModule forward works."""
@@ -44,9 +47,11 @@ def test_torchscript_input_output(modelclass):
     assert torch.allclose(script_output, model_output)
 
 
+@pytest.mark.skipif(_IS_WINDOWS and _TORCH_GREATER_EQUAL_2_4, reason="not close on Windows + PyTorch 2.4")
 @pytest.mark.parametrize("modelclass", [BoringModel, ParityModuleRNN, BasicGAN])
 def test_torchscript_example_input_output_trace(modelclass):
     """Test that traced LightningModule forward works with example_input_array."""
+    torch.manual_seed(1)
     model = modelclass()
 
     if isinstance(model, BoringModel):
@@ -122,29 +127,27 @@ def test_torchscript_properties(modelclass):
 
 
 @pytest.mark.parametrize("modelclass", [BoringModel, ParityModuleRNN, BasicGAN])
-def test_torchscript_save_load(tmpdir, modelclass):
+def test_torchscript_save_load(tmp_path, modelclass):
     """Test that scripted LightningModule is correctly saved and can be loaded."""
     model = modelclass()
-    output_file = str(tmpdir / "model.pt")
+    output_file = str(tmp_path / "model.pt")
     script = model.to_torchscript(file_path=output_file)
     loaded_script = torch.jit.load(output_file)
     assert torch.allclose(next(script.parameters()), next(loaded_script.parameters()))
 
 
 @pytest.mark.parametrize("modelclass", [BoringModel, ParityModuleRNN, BasicGAN])
-def test_torchscript_save_load_custom_filesystem(tmpdir, modelclass):
+def test_torchscript_save_load_custom_filesystem(tmp_path, modelclass):
     """Test that scripted LightningModule is correctly saved and can be loaded with custom filesystems."""
-
     _DUMMY_PRFEIX = "dummy"
     _PREFIX_SEPARATOR = "://"
 
-    class DummyFileSystem(LocalFileSystem):
-        ...
+    class DummyFileSystem(LocalFileSystem): ...
 
     fsspec.register_implementation(_DUMMY_PRFEIX, DummyFileSystem, clobber=True)
 
     model = modelclass()
-    output_file = os.path.join(_DUMMY_PRFEIX, _PREFIX_SEPARATOR, tmpdir, "model.pt")
+    output_file = os.path.join(_DUMMY_PRFEIX, _PREFIX_SEPARATOR, tmp_path, "model.pt")
     script = model.to_torchscript(file_path=output_file)
 
     fs = get_filesystem(output_file)
@@ -154,7 +157,7 @@ def test_torchscript_save_load_custom_filesystem(tmpdir, modelclass):
     assert torch.allclose(next(script.parameters()), next(loaded_script.parameters()))
 
 
-def test_torchcript_invalid_method(tmpdir):
+def test_torchcript_invalid_method():
     """Test that an error is thrown with invalid torchscript method."""
     model = BoringModel()
     model.train(True)
@@ -163,10 +166,42 @@ def test_torchcript_invalid_method(tmpdir):
         model.to_torchscript(method="temp")
 
 
-def test_torchscript_with_no_input(tmpdir):
+def test_torchscript_with_no_input():
     """Test that an error is thrown when there is no input tensor."""
     model = BoringModel()
     model.example_input_array = None
 
     with pytest.raises(ValueError, match="requires either `example_inputs` or `model.example_input_array`"):
         model.to_torchscript(method="trace")
+
+
+def test_torchscript_script_recursively():
+    class GrandChild(LightningModule):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Linear(1, 1)
+
+        def forward(self, inputs):
+            return self.model(inputs)
+
+    class Child(LightningModule):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Sequential(GrandChild(), GrandChild())
+
+        def forward(self, inputs):
+            return self.model(inputs)
+
+    class Parent(LightningModule):
+        def __init__(self):
+            super().__init__()
+            self.model = Child()
+
+        def forward(self, inputs):
+            return self.model(inputs)
+
+    lm = Parent()
+    assert not lm._jit_is_scripting
+    script = lm.to_torchscript(method="script")
+    assert not lm._jit_is_scripting
+    assert isinstance(script, torch.jit.RecursiveScriptModule)

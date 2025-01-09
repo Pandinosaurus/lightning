@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,53 +14,31 @@
 """Test that the warnings actually appear and they have the correct `stacklevel`
 
 Needs to be run outside of `pytest` as it captures all the warnings.
+
 """
+
+import importlib
 import os
+import warnings
 from contextlib import redirect_stderr
 from io import StringIO
+from unittest import mock
 
-from pytorch_lightning.utilities.rank_zero import _warn, rank_zero_deprecation, rank_zero_warn
-from pytorch_lightning.utilities.warnings import WarningCache
+import pytest
+from lightning_utilities.test.warning import no_warning_call
 
-standalone = os.getenv("PL_RUN_STANDALONE_TESTS", "0") == "1"
-if standalone and __name__ == "__main__":
+import lightning.pytorch
+from lightning.pytorch.utilities.warnings import PossibleUserWarning
 
-    stderr = StringIO()
-    # recording
-    with redirect_stderr(stderr):
-        _warn("test1")
-        _warn("test2", category=DeprecationWarning)
-
-        rank_zero_warn("test3")
-        rank_zero_warn("test4", category=DeprecationWarning)
-
-        rank_zero_deprecation("test5")
-
-        cache = WarningCache()
-        cache.warn("test6")
-        cache.deprecation("test7")
-
-    output = stderr.getvalue()
-    assert "test_warnings.py:31: UserWarning: test1" in output
-    assert "test_warnings.py:32: DeprecationWarning: test2" in output
-
-    assert "test_warnings.py:34: UserWarning: test3" in output
-    assert "test_warnings.py:35: DeprecationWarning: test4" in output
-
-    assert "test_warnings.py:37: LightningDeprecationWarning: test5" in output
-
-    assert "test_warnings.py:40: UserWarning: test6" in output
-    assert "test_warnings.py:41: LightningDeprecationWarning: test7" in output
-
+if __name__ == "__main__":
     # check that logging is properly configured
     import logging
 
-    from pytorch_lightning import _DETAIL
-
     root_logger = logging.getLogger()
-    lightning_logger = logging.getLogger("pytorch_lightning")
+    lightning_logger = logging.getLogger("lightning.pytorch")
     # should have a `StreamHandler`
-    assert lightning_logger.hasHandlers() and len(lightning_logger.handlers) == 1
+    assert lightning_logger.hasHandlers()
+    assert len(lightning_logger.handlers) == 1
     # set our own stream for testing
     handler = lightning_logger.handlers[0]
     assert isinstance(handler, logging.StreamHandler)
@@ -81,14 +59,14 @@ if standalone and __name__ == "__main__":
     output = stderr.getvalue()
     assert output == "test2\n", repr(output)
 
-    stderr = StringIO()
-    lightning_logger.handlers[0].stream = stderr
-    with redirect_stderr(stderr):
-        # Lightning should not output DETAIL level logging by default
-        lightning_logger.detail("test1")
-        lightning_logger.setLevel(_DETAIL)
-        lightning_logger.detail("test2")
-        # logger should not output anything for DEBUG statements if set to DETAIL
-        lightning_logger.debug("test3")
-    output = stderr.getvalue()
-    assert output == "test2\n", repr(output)
+
+@pytest.mark.parametrize("setting", ["0", "off"])
+@mock.patch.dict(os.environ, {}, clear=True)
+def test_disable_possible_user_warnings_from_environment(setting):
+    with pytest.warns(PossibleUserWarning):
+        warnings.warn("test", PossibleUserWarning)
+    os.environ["POSSIBLE_USER_WARNINGS"] = setting
+    importlib.reload(lightning.pytorch)
+    with no_warning_call(PossibleUserWarning):
+        warnings.warn("test", PossibleUserWarning)
+    warnings.resetwarnings()

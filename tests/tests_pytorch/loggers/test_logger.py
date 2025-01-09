@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,84 +14,20 @@
 import pickle
 from argparse import Namespace
 from copy import deepcopy
-from typing import Any, Dict, Optional
-from unittest.mock import MagicMock, patch
+from typing import Any, Optional
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 import torch
 
-from pytorch_lightning import Trainer
-from pytorch_lightning.demos.boring_classes import BoringDataModule, BoringModel
-from pytorch_lightning.loggers import Logger, LoggerCollection, TensorBoardLogger
-from pytorch_lightning.loggers.logger import DummyExperiment, DummyLogger
-from pytorch_lightning.utilities.exceptions import MisconfigurationException
-from pytorch_lightning.utilities.logger import _convert_params, _sanitize_params
-from pytorch_lightning.utilities.rank_zero import rank_zero_only
-
-
-def test_logger_collection():
-    mock1 = MagicMock()
-    mock2 = MagicMock()
-
-    with pytest.deprecated_call(match="`LoggerCollection` is deprecated in v1.6"):
-        logger = LoggerCollection([mock1, mock2])
-
-    assert logger[0] == mock1
-    assert logger[1] == mock2
-
-    assert logger.experiment[0] == mock1.experiment
-    assert logger.experiment[1] == mock2.experiment
-
-    assert logger.save_dir is None
-
-    logger.update_agg_funcs({"test": np.mean}, np.sum)
-    mock1.update_agg_funcs.assert_called_once_with({"test": np.mean}, np.sum)
-    mock2.update_agg_funcs.assert_called_once_with({"test": np.mean}, np.sum)
-
-    logger.log_metrics(metrics={"test": 2.0}, step=4)
-    mock1.log_metrics.assert_called_once_with(metrics={"test": 2.0}, step=4)
-    mock2.log_metrics.assert_called_once_with(metrics={"test": 2.0}, step=4)
-
-    logger.finalize("success")
-    mock1.finalize.assert_called_once()
-    mock2.finalize.assert_called_once()
-
-
-def test_logger_collection_unique_names():
-    unique_name = "name1"
-    logger1 = CustomLogger(name=unique_name)
-    logger2 = CustomLogger(name=unique_name)
-
-    with pytest.deprecated_call(match="`LoggerCollection` is deprecated in v1.6"):
-        logger = LoggerCollection([logger1, logger2])
-
-    assert logger.name == unique_name
-
-
-def test_logger_collection_names_order():
-    loggers = [CustomLogger(name=n) for n in ("name1", "name2", "name1", "name3")]
-    with pytest.deprecated_call(match="`LoggerCollection` is deprecated in v1.6"):
-        logger = LoggerCollection(loggers)
-    assert logger.name == f"{loggers[0].name}_{loggers[1].name}_{loggers[3].name}"
-
-
-def test_logger_collection_unique_versions():
-    unique_version = "1"
-    logger1 = CustomLogger(version=unique_version)
-    logger2 = CustomLogger(version=unique_version)
-
-    with pytest.deprecated_call(match="`LoggerCollection` is deprecated in v1.6"):
-        logger = LoggerCollection([logger1, logger2])
-
-    assert logger.version == unique_version
-
-
-def test_logger_collection_versions_order():
-    loggers = [CustomLogger(version=v) for v in ("1", "2", "1", "3")]
-    with pytest.deprecated_call(match="`LoggerCollection` is deprecated in v1.6"):
-        logger = LoggerCollection(loggers)
-    assert logger.version == f"{loggers[0].version}_{loggers[1].version}_{loggers[3].version}"
+from lightning.fabric.utilities.logger import _convert_params, _sanitize_params
+from lightning.pytorch import Trainer
+from lightning.pytorch.demos.boring_classes import BoringDataModule, BoringModel
+from lightning.pytorch.loggers import Logger, TensorBoardLogger
+from lightning.pytorch.loggers.logger import DummyExperiment, DummyLogger
+from lightning.pytorch.loggers.utilities import _scan_checkpoints
+from lightning.pytorch.utilities.rank_zero import rank_zero_only
 
 
 class CustomLogger(Logger):
@@ -139,17 +75,16 @@ class CustomLogger(Logger):
         self.after_save_checkpoint_called = True
 
 
-def test_custom_logger(tmpdir):
+def test_custom_logger(tmp_path):
     class CustomModel(BoringModel):
         def training_step(self, batch, batch_idx):
-            output = self.layer(batch)
-            loss = self.loss(batch, output)
+            loss = self.step(batch)
             self.log("train_loss", loss)
             return {"loss": loss}
 
     logger = CustomLogger()
     model = CustomModel()
-    trainer = Trainer(max_steps=2, log_every_n_steps=1, logger=logger, default_root_dir=tmpdir)
+    trainer = Trainer(max_steps=2, log_every_n_steps=1, logger=logger, default_root_dir=tmp_path)
     trainer.fit(model)
     assert trainer.state.finished, f"Training failed with {trainer.state}"
     assert logger.metrics_logged != {}
@@ -157,11 +92,10 @@ def test_custom_logger(tmpdir):
     assert logger.finalized_status == "success"
 
 
-def test_multiple_loggers(tmpdir):
+def test_multiple_loggers(tmp_path):
     class CustomModel(BoringModel):
         def training_step(self, batch, batch_idx):
-            output = self.layer(batch)
-            loss = self.loss(batch, output)
+            loss = self.step(batch)
             self.log("train_loss", loss)
             return {"loss": loss}
 
@@ -169,7 +103,7 @@ def test_multiple_loggers(tmpdir):
     logger1 = CustomLogger()
     logger2 = CustomLogger()
 
-    trainer = Trainer(max_steps=2, log_every_n_steps=1, logger=[logger1, logger2], default_root_dir=tmpdir)
+    trainer = Trainer(max_steps=2, log_every_n_steps=1, logger=[logger1, logger2], default_root_dir=tmp_path)
     trainer.fit(model)
     assert trainer.state.finished, f"Training failed with {trainer.state}"
 
@@ -182,9 +116,8 @@ def test_multiple_loggers(tmpdir):
     assert logger2.finalized_status == "success"
 
 
-def test_multiple_loggers_pickle(tmpdir):
+def test_multiple_loggers_pickle(tmp_path):
     """Verify that pickling trainer with multiple loggers works."""
-
     logger1 = CustomLogger()
     logger2 = CustomLogger()
 
@@ -198,7 +131,7 @@ def test_multiple_loggers_pickle(tmpdir):
         assert logger.metrics_logged == {"acc": 1.0}
 
 
-def test_adding_step_key(tmpdir):
+def test_adding_step_key(tmp_path):
     class CustomTensorBoardLogger(TensorBoardLogger):
         def __init__(self, *args, **kwargs) -> None:
             super().__init__(*args, **kwargs)
@@ -211,43 +144,24 @@ def test_adding_step_key(tmpdir):
             super().log_metrics(metrics, step)
 
     class CustomModel(BoringModel):
-        def training_epoch_end(self, outputs):
+        def on_train_epoch_end(self):
             self.logger.logged_step += 1
             self.log_dict({"step": self.logger.logged_step, "train_acc": self.logger.logged_step / 10})
 
-        def validation_epoch_end(self, outputs):
+        def on_validation_epoch_end(self):
             self.logger.logged_step += 1
             self.log_dict({"step": self.logger.logged_step, "val_acc": self.logger.logged_step / 10})
 
     model = CustomModel()
     trainer = Trainer(
         max_epochs=3,
-        logger=CustomTensorBoardLogger(save_dir=tmpdir),
-        default_root_dir=tmpdir,
+        logger=CustomTensorBoardLogger(save_dir=tmp_path),
+        default_root_dir=tmp_path,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
         num_sanity_val_steps=0,
     )
     trainer.fit(model)
-
-
-def test_dummyexperiment_support_indexing():
-    """Test that the DummyExperiment can imitate indexing the experiment in a LoggerCollection."""
-    experiment = DummyExperiment()
-    assert experiment[0] == experiment
-
-
-def test_dummylogger_support_indexing():
-    """Test that the DummyLogger can imitate indexing of a LoggerCollection."""
-    logger = DummyLogger()
-    assert logger[0] == logger
-
-
-def test_dummylogger_empty_iterable():
-    """Test that DummyLogger represents an empty iterable."""
-    logger = DummyLogger()
-    for _ in logger:
-        assert False
 
 
 def test_dummylogger_noop_method_calls():
@@ -312,8 +226,8 @@ def test_np_sanitization():
 
 
 @pytest.mark.parametrize("logger", [True, False])
-@patch("pytorch_lightning.loggers.tensorboard.TensorBoardLogger.log_hyperparams")
-def test_log_hyperparams_being_called(log_hyperparams_mock, tmpdir, logger):
+@patch("lightning.pytorch.loggers.tensorboard.TensorBoardLogger.log_hyperparams")
+def test_log_hyperparams_being_called(log_hyperparams_mock, tmp_path, logger):
     class TestModel(BoringModel):
         def __init__(self, param_one, param_two):
             super().__init__()
@@ -321,7 +235,12 @@ def test_log_hyperparams_being_called(log_hyperparams_mock, tmpdir, logger):
 
     model = TestModel("pytorch", "lightning")
     trainer = Trainer(
-        default_root_dir=tmpdir, max_epochs=1, limit_train_batches=0.1, limit_val_batches=0.1, num_sanity_val_steps=0
+        default_root_dir=tmp_path,
+        max_epochs=1,
+        limit_train_batches=0.1,
+        limit_val_batches=0.1,
+        num_sanity_val_steps=0,
+        logger=TensorBoardLogger(tmp_path),
     )
     trainer.fit(model)
 
@@ -331,27 +250,26 @@ def test_log_hyperparams_being_called(log_hyperparams_mock, tmpdir, logger):
         log_hyperparams_mock.assert_not_called()
 
 
-@patch("pytorch_lightning.loggers.tensorboard.TensorBoardLogger.log_hyperparams")
-def test_log_hyperparams_key_collision(log_hyperparams_mock, tmpdir):
+@patch("lightning.pytorch.loggers.tensorboard.TensorBoardLogger.log_hyperparams")
+def test_log_hyperparams_key_collision(_, tmp_path):
     class TestModel(BoringModel):
-        def __init__(self, hparams: Dict[str, Any]) -> None:
+        def __init__(self, hparams: dict[str, Any]) -> None:
             super().__init__()
             self.save_hyperparameters(hparams)
 
     class TestDataModule(BoringDataModule):
-        def __init__(self, hparams: Dict[str, Any]) -> None:
+        def __init__(self, hparams: dict[str, Any]) -> None:
             super().__init__()
             self.save_hyperparameters(hparams)
 
-    class _Test:
-        ...
+    class _Test: ...
 
     same_params = {1: 1, "2": 2, "three": 3.0, "test": _Test(), "4": torch.tensor(4)}
     model = TestModel(same_params)
-    dm = TestDataModule(same_params)
 
     trainer = Trainer(
-        default_root_dir=tmpdir,
+        default_root_dir=tmp_path,
+        logger=TensorBoardLogger(tmp_path),
         max_epochs=1,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
@@ -367,7 +285,6 @@ def test_log_hyperparams_key_collision(log_hyperparams_mock, tmpdir):
     obj_params = deepcopy(same_params)
     obj_params["test"] = _Test()
     model = TestModel(same_params)
-    dm = TestDataModule(obj_params)
     trainer.fit(model)
 
     diff_params = deepcopy(same_params)
@@ -375,7 +292,8 @@ def test_log_hyperparams_key_collision(log_hyperparams_mock, tmpdir):
     model = TestModel(same_params)
     dm = TestDataModule(diff_params)
     trainer = Trainer(
-        default_root_dir=tmpdir,
+        default_root_dir=tmp_path,
+        logger=TensorBoardLogger(tmp_path),
         max_epochs=1,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
@@ -384,7 +302,7 @@ def test_log_hyperparams_key_collision(log_hyperparams_mock, tmpdir):
         enable_progress_bar=False,
         enable_model_summary=False,
     )
-    with pytest.raises(MisconfigurationException, match="Error while merging hparams"):
+    with pytest.raises(RuntimeError, match="Error while merging hparams"):
         trainer.fit(model, dm)
 
     tensor_params = deepcopy(same_params)
@@ -392,7 +310,8 @@ def test_log_hyperparams_key_collision(log_hyperparams_mock, tmpdir):
     model = TestModel(same_params)
     dm = TestDataModule(tensor_params)
     trainer = Trainer(
-        default_root_dir=tmpdir,
+        default_root_dir=tmp_path,
+        logger=TensorBoardLogger(tmp_path),
         max_epochs=1,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
@@ -401,5 +320,31 @@ def test_log_hyperparams_key_collision(log_hyperparams_mock, tmpdir):
         enable_progress_bar=False,
         enable_model_summary=False,
     )
-    with pytest.raises(MisconfigurationException, match="Error while merging hparams"):
+    with pytest.raises(RuntimeError, match="Error while merging hparams"):
         trainer.fit(model, dm)
+
+
+@pytest.mark.parametrize("save_top_k", [0, 1, 2, 5])
+@patch("lightning.pytorch.callbacks.ModelCheckpoint")
+def test_scan_checkpoints(checkpoint_callback_mock, tmp_path, save_top_k: int):
+    """Checks if the expected number of checkpoints is returned."""
+    # Test first condition of _scan_checkpoints: if c[1] not in logged_model_time.keys()
+    # Test if the returned list of checkpoints has length save_top_k
+    best_k_models = {}
+    for i in range(save_top_k):
+        ckpt_path = tmp_path / f"{i}.ckpt"
+        with open(ckpt_path, "w") as f:
+            f.write("")
+        best_k_models[ckpt_path] = i
+    checkpoint_callback_mock.best_k_models = best_k_models
+
+    logged_model_time = {}
+    checkpoints = _scan_checkpoints(checkpoint_callback_mock, logged_model_time)
+    assert len(checkpoints) == save_top_k
+
+    # Test second condition of _scan_checkpoints: or logged_model_time[c[1]] < c[0]]
+    # Test if the returned list of checkpoints has still size 0
+    for c in checkpoints:
+        logged_model_time[c[1]] = c[0] + 1000
+    checkpoints = _scan_checkpoints(checkpoint_callback_mock, logged_model_time)
+    assert len(checkpoints) == 0

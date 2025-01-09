@@ -62,17 +62,17 @@ Example: Imagenet (Computer Vision)
             super().__init__()
 
             # init a pretrained resnet
-            backbone = models.resnet50(pretrained=True)
+            backbone = models.resnet50(weights="DEFAULT")
             num_filters = backbone.fc.in_features
             layers = list(backbone.children())[:-1]
             self.feature_extractor = nn.Sequential(*layers)
+            self.feature_extractor.eval()
 
             # use the pretrained model to classify cifar-10 (10 image classes)
             num_target_classes = 10
             self.classifier = nn.Linear(num_filters, num_target_classes)
 
         def forward(self, x):
-            self.feature_extractor.eval()
             with torch.no_grad():
                 representations = self.feature_extractor(x).flatten(1)
             x = self.classifier(representations)
@@ -116,11 +116,11 @@ Here's a model that uses `Huggingface transformers <https://github.com/huggingfa
             super().__init__()
 
             self.bert = BertModel.from_pretrained("bert-base-cased", output_attentions=True)
+            self.bert.train()
             self.W = nn.Linear(bert.config.hidden_size, 3)
             self.num_classes = 3
 
         def forward(self, input_ids, attention_mask, token_type_ids):
-
             h, _, attn = self.bert(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)
 
             h_cls = h[:, 0]

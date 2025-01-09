@@ -48,8 +48,7 @@ make docs
 
 and open `docs/build/html/index.html` in your browser.
 
-When you send a PR the continuous integration will run tests and build the docs. You can access a preview of the html pages in the
-_Artifacts_ tab in CircleCI when you click on the task named _build-Docs_ of _ci-tests_ at the bottom of the PR page.
+When you send a PR the continuous integration will run tests and build the docs.
 
 Notes:
 
@@ -65,10 +64,10 @@ To speed this up, enable this flag in before building docs:
 
 ```bash
 # builds notebooks which is slow
-export PL_FAST_DOCS_DEV=0
+export FAST_DOCS_DEV=0
 
 # fast notebook build which is fast
-export PL_FAST_DOCS_DEV=1
+export FAST_DOCS_DEV=1
 ```
 
 ## docs CSS/theme

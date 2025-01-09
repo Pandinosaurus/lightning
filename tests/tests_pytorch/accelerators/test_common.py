@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,23 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from unittest import mock
+from typing import Any
 
-from pytorch_lightning import Trainer
-from pytorch_lightning.accelerators import Accelerator, CPUAccelerator, CUDAAccelerator, IPUAccelerator, TPUAccelerator
-from pytorch_lightning.strategies import DDPStrategy
+import torch
 
-
-@mock.patch("pytorch_lightning.utilities.device_parser.num_cuda_devices", return_value=2)
-def test_auto_device_count(_):
-    assert CPUAccelerator.auto_device_count() == 1
-    assert CUDAAccelerator.auto_device_count() == 2
-    assert TPUAccelerator.auto_device_count() == 8
-    assert IPUAccelerator.auto_device_count() == 4
+from lightning.pytorch import Trainer
+from lightning.pytorch.accelerators import Accelerator
+from lightning.pytorch.strategies import DDPStrategy
 
 
-def test_pluggable_accelerator():
+def test_pluggable_accelerator(mps_count_0, cuda_count_2):
     class TestAccelerator(Accelerator):
+        def setup_device(self, device: torch.device) -> None:
+            pass
+
+        def get_device_stats(self, device: torch.device) -> dict[str, Any]:
+            pass
+
+        def teardown(self) -> None:
+            pass
+
         @staticmethod
         def parse_devices(devices):
             return devices

@@ -1,6 +1,6 @@
 .. testsetup:: *
 
-    from pytorch_lightning.callbacks import StochasticWeightAveraging
+    from lightning.pytorch.callbacks import StochasticWeightAveraging
 
 .. _training_tricks:
 
@@ -33,7 +33,7 @@ If the Trainer's ``gradient_clip_algorithm`` is set to ``'value'`` (``'norm'`` b
     If using mixed precision, the ``gradient_clip_val`` does not need to be changed as the gradients are unscaled
     before applying the clipping function.
 
-.. seealso:: :class:`~pytorch_lightning.trainer.trainer.Trainer`
+.. seealso:: :class:`~lightning.pytorch.trainer.trainer.Trainer`
 
 .. testcode::
 
@@ -61,7 +61,7 @@ it harder to end up in a local minimum during optimization.
 For a more detailed explanation of SWA and how it works,
 read `this post <https://pytorch.org/blog/pytorch-1.6-now-includes-stochastic-weight-averaging>`__ by the PyTorch team.
 
-.. seealso:: The :class:`~pytorch_lightning.callbacks.StochasticWeightAveraging` callback
+.. seealso:: The :class:`~lightning.pytorch.callbacks.StochasticWeightAveraging` callback
 
 .. testcode::
 
@@ -69,6 +69,8 @@ read `this post <https://pytorch.org/blog/pytorch-1.6-now-includes-stochastic-we
     trainer = Trainer(callbacks=[StochasticWeightAveraging(swa_lrs=1e-2)])
 
 ----------
+
+.. _batch_size_finder:
 
 *****************
 Batch Size Finder
@@ -78,18 +80,25 @@ Auto-scaling of batch size can be enabled to find the largest batch size that fi
 memory. Large batch size often yields a better estimation of the gradients, but may also result in
 longer training time. Inspired by https://github.com/BlackHC/toma.
 
-.. seealso:: :class:`~pytorch_lightning.trainer.trainer.Trainer`
+.. seealso:: :class:`~lightning.pytorch.tuner.tuning.Tuner`
 
 .. code-block:: python
 
-    # DEFAULT (ie: don't scale batch size automatically)
-    trainer = Trainer(auto_scale_batch_size=None)
+    from lightning.pytorch.tuner import Tuner
 
-    # Autoscale batch size
-    trainer = Trainer(auto_scale_batch_size=None | "power" | "binsearch")
+    # Create a tuner for the trainer
+    trainer = Trainer(...)
+    tuner = Tuner(trainer)
 
-    # Find the batch size
-    trainer.tune(model)
+    # Auto-scale batch size by growing it exponentially (default)
+    tuner.scale_batch_size(model, mode="power")
+
+    # Auto-scale batch size with binary search
+    tuner.scale_batch_size(model, mode="binsearch")
+
+    # Fit as normal with new batch size
+    trainer.fit(model)
+
 
 Currently, this feature supports two modes ``'power'`` scaling and ``'binsearch'``
 scaling. In ``'power'`` scaling, starting from a batch size of 1 keeps doubling
@@ -98,7 +107,6 @@ argument to ``'binsearch'`` will initially also try doubling the batch size unti
 it encounters an OOM, after which it will do a binary search that will finetune the
 batch size. Additionally, it should be noted that the batch size scaler cannot
 search for batch sizes larger than the size of the training dataset.
-
 
 .. note::
 
@@ -122,9 +130,11 @@ search for batch sizes larger than the size of the training dataset.
                 return DataLoader(train_dataset, batch_size=self.batch_size | self.hparams.batch_size)
 
 
-        trainer = Trainer(...)
         model = LitModel(batch_size=32)
-        trainer.tune(model)
+        trainer = Trainer(...)
+        tuner = Tuner(trainer)
+        tuner.scale_batch_size(model)
+
 
         # using LightningDataModule
         class LitDataModule(LightningDataModule):
@@ -138,39 +148,18 @@ search for batch sizes larger than the size of the training dataset.
                 return DataLoader(train_dataset, batch_size=self.batch_size | self.hparams.batch_size)
 
 
-        trainer = Trainer(...)
         model = MyModel()
         datamodule = LitDataModule(batch_size=32)
-        trainer.tune(model, datamodule=datamodule)
+
+        trainer = Trainer(...)
+        tuner = Tuner(trainer)
+        tuner.scale_batch_size(model, datamodule=datamodule)
 
     Note that the ``train_dataloader`` can be either part of
     the ``LightningModule`` or ``LightningDataModule``
     as shown above. If both the ``LightningModule``
     and the ``LightningDataModule`` contain a ``train_dataloader``,
     the ``LightningDataModule`` takes precedence.
-
-.. warning::
-
-    Due to the constraints listed above, this features does *NOT* work when passing dataloaders directly
-    to ``.fit()``.
-
-The scaling algorithm has a number of parameters that the user can control by
-invoking the :meth:`~pytorch_lightning.tuner.tuning.Tuner.scale_batch_size` method:
-
-.. code-block:: python
-
-    # Use default in trainer construction
-    trainer = Trainer()
-    tuner = Tuner(trainer)
-
-    # Invoke method
-    new_batch_size = tuner.scale_batch_size(model, *extra_parameters_here)
-
-    # Override old batch size (this is done automatically)
-    model.hparams.batch_size = new_batch_size
-
-    # Fit as normal
-    trainer.fit(model)
 
 The algorithm in short works by:
     1. Dumping the current state of the model and trainer
@@ -187,6 +176,60 @@ The algorithm in short works by:
 
 .. warning:: Batch size finder is not yet supported for DDP or any of its variations, it is coming soon.
 
+
+Customizing Batch Size Finder
+=============================
+
+.. warning::  This is an :ref:`experimental <versioning:Experimental API>` feature.
+
+1. You can also customize the :class:`~lightning.pytorch.callbacks.batch_size_finder.BatchSizeFinder` callback to run
+   at different epochs. This feature is useful while fine-tuning models since you can't always use the same batch size after
+   unfreezing the backbone.
+
+.. code-block:: python
+
+    from lightning.pytorch.callbacks import BatchSizeFinder
+
+
+    class FineTuneBatchSizeFinder(BatchSizeFinder):
+        def __init__(self, milestones, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.milestones = milestones
+
+        def on_fit_start(self, *args, **kwargs):
+            return
+
+        def on_train_epoch_start(self, trainer, pl_module):
+            if trainer.current_epoch in self.milestones or trainer.current_epoch == 0:
+                self.scale_batch_size(trainer, pl_module)
+
+
+    trainer = Trainer(callbacks=[FineTuneBatchSizeFinder(milestones=(5, 10))])
+    trainer.fit(...)
+
+
+2. Run batch size finder for ``validate``/``test``/``predict``.
+
+.. code-block:: python
+
+    from lightning.pytorch.callbacks import BatchSizeFinder
+
+
+    class EvalBatchSizeFinder(BatchSizeFinder):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+
+        def on_fit_start(self, *args, **kwargs):
+            return
+
+        def on_test_start(self, trainer, pl_module):
+            self.scale_batch_size(trainer, pl_module)
+
+
+    trainer = Trainer(callbacks=[EvalBatchSizeFinder()])
+    trainer.test(...)
+
+
 ----------
 
 .. _learning_rate_finder:
@@ -194,14 +237,6 @@ The algorithm in short works by:
 ********************
 Learning Rate Finder
 ********************
-
-.. raw:: html
-
-    <video width="50%" max-width="400px" controls
-    poster="https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/pl_docs/trainer_flags/thumb/auto_lr_find.jpg"
-    src="https://pl-bolts-doc-images.s3.us-east-2.amazonaws.com/pl_docs/trainer_flags/auto_lr_find.mp4"></video>
-
-|
 
 For training deep neural networks, selecting a good learning rate is essential
 for both better performance and faster convergence. Even optimizers such as
@@ -218,7 +253,13 @@ initial learning rate.
 .. warning::
 
     For the moment, this feature only works with models having a single optimizer.
-    LR Finder support for DDP and any of its variations is not implemented yet. It is coming soon.
+
+
+.. note::
+
+    With DDP: Since all the processes run in isolation, only process with ``global_rank=0`` will make the decision to stop the
+    learning rate finder and broadcast its results to all other ranks. That means, at the end of LR finder, each process will be running with
+    the learning rate found on ``global_rank=0``.
 
 
 Using Lightning's built-in LR finder
@@ -226,15 +267,16 @@ Using Lightning's built-in LR finder
 
 To enable the learning rate finder, your :doc:`lightning module <../common/lightning_module>` needs to
 have a ``learning_rate`` or ``lr`` attribute (or as a field in your ``hparams`` i.e.
-``hparams.learning_rate`` or ``hparams.lr``). Then, set ``Trainer(auto_lr_find=True)``
-during trainer construction, and then call ``trainer.tune(model)`` to run the LR finder.
+``hparams.learning_rate`` or ``hparams.lr``). Then, create the :class:`~lightning.pytorch.tuner.tuning.Tuner` via ``tuner = Tuner(trainer)``
+and call ``tuner.lr_find(model)`` to run the LR finder.
 The suggested ``learning_rate`` will be written to the console and will be automatically
 set to your :doc:`lightning module <../common/lightning_module>`, which can be accessed
 via ``self.learning_rate`` or ``self.lr``.
 
-.. seealso:: :ref:`trainer.tune <common/trainer:tune>`.
-
 .. code-block:: python
+
+    from lightning.pytorch.tuner import Tuner
+
 
     class LitModel(LightningModule):
         def __init__(self, learning_rate):
@@ -247,35 +289,39 @@ via ``self.learning_rate`` or ``self.lr``.
 
 
     model = LitModel()
+    trainer = Trainer(...)
+
+    # Create a Tuner
+    tuner = Tuner(trainer)
 
     # finds learning rate automatically
     # sets hparams.lr or hparams.learning_rate to that learning rate
-    trainer = Trainer(auto_lr_find=True)
+    tuner.lr_find(model)
 
-    trainer.tune(model)
 
-If your model is using an arbitrary value instead of ``self.lr`` or ``self.learning_rate``, set that value as ``auto_lr_find``:
+If your model is using an arbitrary value instead of ``self.lr`` or ``self.learning_rate``, set that value in ``lr_find``:
 
 .. code-block:: python
 
     model = LitModel()
+    trainer = Trainer(...)
+    tuner = Tuner(trainer)
 
     # to set to your own hparams.my_value
-    trainer = Trainer(auto_lr_find="my_value")
+    tuner.lr_find(model, attr_name="my_value")
 
-    trainer.tune(model)
 
 You can also inspect the results of the learning rate finder or just play around
-with the parameters of the algorithm. This can be done by invoking the
-:meth:`~pytorch_lightning.tuner.tuning.Tuner.lr_find` method. A typical example of this would look like:
+with the parameters of the algorithm. A typical example of this would look like:
 
 .. code-block:: python
 
     model = MyModelClass(hparams)
     trainer = Trainer()
+    tuner = Tuner(trainer)
 
     # Run learning rate finder
-    lr_finder = trainer.tuner.lr_find(model)
+    lr_finder = tuner.lr_find(model)
 
     # Results can be found in
     print(lr_finder.results)
@@ -298,6 +344,36 @@ below. It is recommended to not pick the learning rate that achieves the lowest
 loss, but instead something in the middle of the sharpest downward slope (red point).
 This is the point returned py ``lr_finder.suggestion()``.
 
+
+Customizing Learning Rate Finder
+================================
+
+.. warning::  This is an :ref:`experimental <versioning:Experimental API>` feature.
+
+You can also customize the :class:`~lightning.pytorch.callbacks.lr_finder.LearningRateFinder` callback to run at different epochs. This feature is useful while fine-tuning models.
+
+.. code-block:: python
+
+    from lightning.pytorch.callbacks import LearningRateFinder
+
+
+    class FineTuneLearningRateFinder(LearningRateFinder):
+        def __init__(self, milestones, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.milestones = milestones
+
+        def on_fit_start(self, *args, **kwargs):
+            return
+
+        def on_train_epoch_start(self, trainer, pl_module):
+            if trainer.current_epoch in self.milestones or trainer.current_epoch == 0:
+                self.lr_find(trainer, pl_module)
+
+
+    trainer = Trainer(callbacks=[FineTuneLearningRateFinder(milestones=(5, 10))])
+    trainer.fit(...)
+
+
 .. figure:: ../_static/images/trainer/lr_finder.png
 
 ----------
@@ -318,15 +394,15 @@ Refer to :doc:`Advanced GPU Optimized Training <../advanced/model_parallel>` for
 Sharing Datasets Across Process Boundaries
 ******************************************
 
-The :class:`~pytorch_lightning.core.datamodule.LightningDataModule` class provides an organized way to decouple data loading from training logic, with :meth:`~pytorch_lightning.core.hooks.DataHooks.prepare_data` being used for downloading and pre-processing the dataset on a single process, and :meth:`~pytorch_lightning.core.hooks.DataHooks.setup` loading the pre-processed data for each process individually:
+The :class:`~lightning.pytorch.core.datamodule.LightningDataModule` class provides an organized way to decouple data loading from training logic, with :meth:`~lightning.pytorch.core.hooks.DataHooks.prepare_data` being used for downloading and pre-processing the dataset on a single process, and :meth:`~lightning.pytorch.core.hooks.DataHooks.setup` loading the pre-processed data for each process individually:
 
 .. code-block:: python
 
-    class MNISTDataModule(pl.LightningDataModule):
+    class MNISTDataModule(L.LightningDataModule):
         def prepare_data(self):
             MNIST(self.data_dir, download=True)
 
-        def setup(self, stage: Optional[str] = None):
+        def setup(self, stage: str):
             self.mnist = MNIST(self.data_dir)
 
         def train_loader(self):
@@ -336,7 +412,7 @@ However, for in-memory datasets, that means that each process will hold a (redun
 For example, when training Graph Neural Networks, a common strategy is to load the entire graph into CPU memory for fast access to the entire graph structure and its features, and to then perform neighbor sampling to obtain mini-batches that fit onto the GPU.
 
 A simple way to prevent redundant dataset replicas is to rely on :obj:`torch.multiprocessing` to share the `data automatically between spawned processes via shared memory <https://pytorch.org/docs/stable/notes/multiprocessing.html>`_.
-For this, all data pre-loading should be done on the main process inside :meth:`DataModule.__init__`. As a result, all tensor-data will get automatically shared when using the :class:`~pytorch_lightning.plugins.strategies.ddp_spawn.DDPSpawnStrategy` strategy.
+For this, all data pre-loading should be done on the main process inside :meth:`DataModule.__init__`. As a result, all tensor-data will get automatically shared when using the ``'ddp_spawn'`` strategy.
 
 .. warning::
 
@@ -345,7 +421,7 @@ For this, all data pre-loading should be done on the main process inside :meth:`
 
 .. code-block:: python
 
-    class MNISTDataModule(pl.LightningDataModule):
+    class MNISTDataModule(L.LightningDataModule):
         def __init__(self, data_dir: str):
             self.mnist = MNIST(data_dir, download=True, transform=T.ToTensor())
 

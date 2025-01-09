@@ -1,4 +1,4 @@
-# Copyright The PyTorch Lightning team.
+# Copyright The Lightning AI team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,29 +11,24 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from unittest.mock import Mock
+
 import pytest
 import torch
 
-import pytorch_lightning as pl
-from pytorch_lightning import LightningDataModule, LightningModule, Trainer
-from pytorch_lightning.callbacks.callback import Callback
-from pytorch_lightning.demos.boring_classes import BoringDataModule, BoringModel, RandomDataset
-from pytorch_lightning.utilities import device_parser
-from pytorch_lightning.utilities.exceptions import MisconfigurationException
-from pytorch_lightning.utilities.warnings import PossibleUserWarning
+from lightning.fabric.utilities.warnings import PossibleUserWarning
+from lightning.pytorch import LightningDataModule, LightningModule, Trainer
+from lightning.pytorch.demos.boring_classes import BoringModel, RandomDataset
+from lightning.pytorch.trainer.configuration_validator import (
+    __verify_eval_loop_configuration,
+    __verify_train_val_loop_configuration,
+)
+from lightning.pytorch.utilities.exceptions import MisconfigurationException
 
 
-def test_wrong_train_setting(tmpdir):
-    """
-    * Test that an error is thrown when no `train_dataloader()` is defined
-    * Test that an error is thrown when no `training_step()` is defined
-    """
-    trainer = Trainer(default_root_dir=tmpdir, max_epochs=1)
-
-    with pytest.raises(MisconfigurationException, match=r"No `train_dataloader\(\)` method defined."):
-        model = BoringModel()
-        model.train_dataloader = None
-        trainer.fit(model)
+def test_wrong_train_setting(tmp_path):
+    """Test that an error is raised when no `training_step()` is defined."""
+    trainer = Trainer(default_root_dir=tmp_path, max_epochs=1)
 
     with pytest.raises(MisconfigurationException, match=r"No `training_step\(\)` method defined."):
         model = BoringModel()
@@ -41,9 +36,9 @@ def test_wrong_train_setting(tmpdir):
         trainer.fit(model)
 
 
-def test_wrong_configure_optimizers(tmpdir):
+def test_wrong_configure_optimizers(tmp_path):
     """Test that an error is thrown when no `configure_optimizers()` is defined."""
-    trainer = Trainer(default_root_dir=tmpdir, max_epochs=1)
+    trainer = Trainer(default_root_dir=tmp_path, max_epochs=1)
 
     with pytest.raises(MisconfigurationException, match=r"No `configure_optimizers\(\)` method defined."):
         model = BoringModel()
@@ -51,9 +46,9 @@ def test_wrong_configure_optimizers(tmpdir):
         trainer.fit(model)
 
 
-def test_fit_val_loop_config(tmpdir):
+def test_fit_val_loop_config(tmp_path):
     """When either val loop or val data are missing raise warning."""
-    trainer = Trainer(default_root_dir=tmpdir, max_epochs=1)
+    trainer = Trainer(default_root_dir=tmp_path, max_epochs=1)
 
     # no val data has val loop
     with pytest.warns(UserWarning, match=r"You passed in a `val_dataloader` but have no `validation_step`"):
@@ -68,15 +63,9 @@ def test_fit_val_loop_config(tmpdir):
         trainer.fit(model)
 
 
-def test_eval_loop_config(tmpdir):
+def test_eval_loop_config(tmp_path):
     """When either eval step or eval data is missing."""
-    trainer = Trainer(default_root_dir=tmpdir, max_epochs=1)
-
-    # has val step but no val data
-    model = BoringModel()
-    model.val_dataloader = None
-    with pytest.raises(MisconfigurationException, match=r"No `val_dataloader\(\)` method defined"):
-        trainer.validate(model)
+    trainer = Trainer(default_root_dir=tmp_path, max_epochs=1)
 
     # has test data but no val step
     model = BoringModel()
@@ -84,23 +73,11 @@ def test_eval_loop_config(tmpdir):
     with pytest.raises(MisconfigurationException, match=r"No `validation_step\(\)` method defined"):
         trainer.validate(model)
 
-    # has test loop but no test data
-    model = BoringModel()
-    model.test_dataloader = None
-    with pytest.raises(MisconfigurationException, match=r"No `test_dataloader\(\)` method defined"):
-        trainer.test(model)
-
     # has test data but no test step
     model = BoringModel()
     model.test_step = None
     with pytest.raises(MisconfigurationException, match=r"No `test_step\(\)` method defined"):
         trainer.test(model)
-
-    # has predict step but no predict data
-    model = BoringModel()
-    model.predict_dataloader = None
-    with pytest.raises(MisconfigurationException, match=r"No `predict_dataloader\(\)` method defined"):
-        trainer.predict(model)
 
     # has predict data but no predict_step
     model = BoringModel()
@@ -116,7 +93,7 @@ def test_eval_loop_config(tmpdir):
 
 
 @pytest.mark.parametrize("datamodule", [False, True])
-def test_trainer_predict_verify_config(tmpdir, datamodule):
+def test_trainer_predict_verify_config(tmp_path, datamodule):
     class TestModel(LightningModule):
         def __init__(self):
             super().__init__()
@@ -141,14 +118,14 @@ def test_trainer_predict_verify_config(tmpdir, datamodule):
         data = TestLightningDataModule(data)
 
     model = TestModel()
-    trainer = Trainer(default_root_dir=tmpdir)
+    trainer = Trainer(default_root_dir=tmp_path)
     results = trainer.predict(model, data)
 
     assert len(results) == 2
     assert results[0][0].shape == torch.Size([1, 2])
 
 
-def test_trainer_manual_optimization_config(tmpdir):
+def test_trainer_manual_optimization_config():
     """Test error message when requesting Trainer features unsupported with manual optimization."""
     model = BoringModel()
     model.automatic_optimization = False
@@ -162,61 +139,26 @@ def test_trainer_manual_optimization_config(tmpdir):
         trainer.fit(model)
 
 
-def test_invalid_setup_method():
-    """Test error message when `setup` method of `LightningModule` or `LightningDataModule` is not defined
-    correctly."""
-
-    class CustomModel(BoringModel):
-        def setup(self):
+def test_legacy_epoch_end_hooks():
+    class TrainingEpochEndModel(BoringModel):
+        def training_epoch_end(self, outputs):
             pass
 
-    class CustomDataModule(BoringDataModule):
-        def setup(self):
+    class ValidationEpochEndModel(BoringModel):
+        def validation_epoch_end(self, outputs):
             pass
 
-    class CustomBoringCallback(Callback):
-        def setup(self, pl_module, trainer):
+    trainer = Mock()
+    with pytest.raises(NotImplementedError, match="training_epoch_end` has been removed in v2.0"):
+        __verify_train_val_loop_configuration(trainer, TrainingEpochEndModel())
+    with pytest.raises(NotImplementedError, match="validation_epoch_end` has been removed in v2.0"):
+        __verify_train_val_loop_configuration(trainer, ValidationEpochEndModel())
+
+    class TestEpochEndModel(BoringModel):
+        def test_epoch_end(self, outputs):
             pass
 
-    fit_kwargs = [
-        {"model": CustomModel(), "datamodule": BoringDataModule()},
-        {"model": BoringModel(), "datamodule": CustomDataModule()},
-    ]
-
-    for kwargs in fit_kwargs:
-        trainer = Trainer(fast_dev_run=True)
-
-        with pytest.raises(MisconfigurationException, match="does not have a `stage` argument"):
-            trainer.fit(**kwargs)
-
-    trainer = Trainer(fast_dev_run=True, callbacks=[CustomBoringCallback()])
-    model = BoringModel()
-
-    with pytest.raises(MisconfigurationException, match="does not have a `stage` argument"):
-        trainer.fit(model)
-
-
-@pytest.mark.parametrize("trainer_kwargs", [{"accelerator": "ipu"}, {"accelerator": "gpu", "strategy": "dp"}])
-@pytest.mark.parametrize("hook", ["transfer_batch_to_device", "on_after_batch_transfer"])
-def test_raise_exception_with_batch_transfer_hooks(monkeypatch, hook, trainer_kwargs, tmpdir):
-    """Test that an exception is raised when overriding batch_transfer_hooks."""
-    if trainer_kwargs.get("accelerator") == "gpu":
-        match_pattern = rf"Overriding `{hook}` is not .* in DP mode."
-        monkeypatch.setattr(device_parser, "is_cuda_available", lambda: True)
-        monkeypatch.setattr(device_parser, "num_cuda_devices", lambda: 2)
-    elif trainer_kwargs.get("accelerator") == "ipu":
-        match_pattern = rf"Overriding `{hook}` is not .* with IPUs"
-        monkeypatch.setattr(pl.accelerators.ipu.IPUAccelerator, "is_available", lambda _: True)
-        monkeypatch.setattr(pl.strategies.ipu, "_IPU_AVAILABLE", lambda: True)
-
-    def custom_method(self, batch, *_, **__):
-        batch = batch + 1
-        return batch
-
-    trainer = Trainer(default_root_dir=tmpdir, **trainer_kwargs)
-
-    model = BoringModel()
-    setattr(model, hook, custom_method)
-
-    with pytest.raises(MisconfigurationException, match=match_pattern):
-        trainer.fit(model)
+    with pytest.raises(NotImplementedError, match="validation_epoch_end` has been removed in v2.0"):
+        __verify_eval_loop_configuration(ValidationEpochEndModel(), "val")
+    with pytest.raises(NotImplementedError, match="test_epoch_end` has been removed in v2.0"):
+        __verify_eval_loop_configuration(TestEpochEndModel(), "test")

@@ -7,13 +7,14 @@ Run on an on-prem cluster (advanced)
 ----
 
 ******************************
-Run on a SLURM managed cluster
+Run on a SLURM-managed cluster
 ******************************
 Lightning automates the details behind training on a SLURM-powered cluster. In contrast to the general purpose
 cluster above, the user does not start the jobs manually on each node and instead submits it to SLURM which
 schedules the resources and time for which the job is allowed to run.
 
 ----
+
 
 ***************************
 Design your training script
@@ -35,8 +36,8 @@ To train a model using multiple nodes, do the following:
     .. testcode::
 
         # train.py
-        def main(hparams):
-            model = LightningTemplateModel(hparams)
+        def main(args):
+            model = YourLightningModule(args)
 
             trainer = Trainer(accelerator="gpu", devices=8, num_nodes=4, strategy="ddp")
 
@@ -44,12 +45,9 @@ To train a model using multiple nodes, do the following:
 
 
         if __name__ == "__main__":
-            root_dir = os.path.dirname(os.path.realpath(__file__))
-            parent_parser = ArgumentParser(add_help=False)
-            hyperparams = parser.parse_args()
-
+            args = ...  # you can use your CLI parser of choice, or the `LightningCLI`
             # TRAIN
-            main(hyperparams)
+            main(args)
 
 4.  Create the appropriate SLURM job:
 
@@ -59,9 +57,9 @@ To train a model using multiple nodes, do the following:
         #!/bin/bash -l
 
         # SLURM SUBMIT SCRIPT
-        #SBATCH --nodes=4
+        #SBATCH --nodes=4             # This needs to match Trainer(num_nodes=...)
         #SBATCH --gres=gpu:8
-        #SBATCH --ntasks-per-node=8
+        #SBATCH --ntasks-per-node=8   # This needs to match Trainer(devices=...)
         #SBATCH --mem=0
         #SBATCH --time=0-02:00:00
 
@@ -82,7 +80,7 @@ To train a model using multiple nodes, do the following:
         # run script from above
         srun python3 train.py
 
-5.  If you want auto-resubmit (read below), add this line to the submit.sh script
+5.  If you want to auto-resubmit (read below), add this line to the submit.sh script
 
     .. code-block:: bash
 
@@ -96,9 +94,9 @@ To train a model using multiple nodes, do the following:
 
 ----
 
-**********************************
-Enable auto wall-time resubmitions
-**********************************
+***********************************
+Enable auto wall-time resubmissions
+***********************************
 When you use Lightning in a SLURM cluster, it automatically detects when it is about
 to run into the wall time and does the following:
 
@@ -113,101 +111,68 @@ To get this behavior make sure to add the correct signal to your SLURM script
     # 90 seconds before training ends
     SBATCH --signal=SIGUSR1@90
 
-If auto-resubmit is not desired, it can be turned off in the :class:`~pytorch_lightning.plugins.environments.slurm_environment.SLURMEnvironment` plugin:
+You can change this signal if your environment requires the use of a different one, for example
+
+.. code-block:: bash
+
+    #SBATCH --signal=SIGHUP@90
+
+Then, when you make your trainer, pass the `requeue_signal` option to the :class:`~lightning.pytorch.plugins.environments.slurm_environment.SLURMEnvironment` plugin:
 
 .. code-block:: python
 
-    from pytorch_lightning.plugins.environments import SLURMEnvironment
+    trainer = Trainer(plugins=[SLURMEnvironment(requeue_signal=signal.SIGHUP)])
+
+If auto-resubmit is not desired, it can be turned off in the :class:`~lightning.pytorch.plugins.environments.slurm_environment.SLURMEnvironment` plugin:
+
+.. code-block:: python
+
+    from lightning.pytorch.plugins.environments import SLURMEnvironment
 
     trainer = Trainer(plugins=[SLURMEnvironment(auto_requeue=False)])
 
 ----
 
-***********************
-Build your SLURM script
-***********************
-Instead of manually building SLURM scripts, you can use the
-`SlurmCluster object <https://williamfalcon.github.io/test-tube/hpc/SlurmCluster>`_
-to do this for you. The SlurmCluster can also run a grid search if you pass
-in a `HyperOptArgumentParser
-<https://williamfalcon.github.io/test-tube/hyperparameter_optimization/HyperOptArgumentParser>`_.
 
-Here is an example where you run a grid search of 9 combinations of hyperparameters.
-See also the multi-node examples
-`here <https://github.com/Lightning-AI/lightning/tree/master/examples/pl_basics>`__.
+****************
+Interactive Mode
+****************
 
-.. code-block:: python
+You can also let SLURM schedule a machine for you and then log in to the machine to run scripts manually.
+This is useful for development and debugging.
+If you set the job name to *bash* or *interactive*, and then log in and run scripts, Lightning's SLURM auto-detection will get bypassed and it can launch processes normally:
 
-    # grid search 3 values of learning rate and 3 values of number of layers for your net
-    # this generates 9 experiments (lr=1e-3, layers=16), (lr=1e-3, layers=32),
-    # (lr=1e-3, layers=64), ... (lr=1e-1, layers=64)
-    parser = HyperOptArgumentParser(strategy="grid_search", add_help=False)
-    parser.opt_list("--learning_rate", default=0.001, type=float, options=[1e-3, 1e-2, 1e-1], tunable=True)
-    parser.opt_list("--layers", default=1, type=float, options=[16, 32, 64], tunable=True)
-    hyperparams = parser.parse_args()
+.. code-block:: bash
 
-    # Slurm cluster submits 9 jobs, each with a set of hyperparams
-    cluster = SlurmCluster(
-        hyperparam_optimizer=hyperparams,
-        log_path="/some/path/to/save",
-    )
+    # make sure to set `--job-name "interactive"`
+    srun --account <your-account> --pty bash --job-name "interactive" ...
 
-    # OPTIONAL FLAGS WHICH MAY BE CLUSTER DEPENDENT
-    # which interface your nodes use for communication
-    cluster.add_command("export NCCL_SOCKET_IFNAME=^docker0,lo")
+    # now run scripts normally
+    python train.py ...
 
-    # see the output of the NCCL connection process
-    # NCCL is how the nodes talk to each other
-    cluster.add_command("export NCCL_DEBUG=INFO")
-
-    # setting a main port here is a good idea.
-    cluster.add_command("export MASTER_PORT=%r" % PORT)
-
-    # ************** DON'T FORGET THIS ***************
-    # MUST load the latest NCCL version
-    cluster.load_modules(["NCCL/2.4.7-1-cuda.10.0"])
-
-    # configure cluster
-    cluster.per_experiment_nb_nodes = 12
-    cluster.per_experiment_nb_gpus = 8
-
-    cluster.add_slurm_cmd(cmd="ntasks-per-node", value=8, comment="1 task per gpu")
-
-    # submit a script with 9 combinations of hyper params
-    # (lr=1e-3, layers=16), (lr=1e-3, layers=32), (lr=1e-3, layers=64), ... (lr=1e-1, layers=64)
-    cluster.optimize_parallel_cluster_gpu(
-        main, nb_trials=9, job_name="name_for_squeue"  # how many permutations of the grid search to run
-    )
-
-
-The other option is that you generate scripts on your own via a bash command or use our
-:doc:`native solution <../clouds/cloud_training>`.
 
 ----
 
-********
-Get help
-********
-Setting up a cluster for distributed training is not trivial. Lightning offers lightning-grid which allows you to configure a cluster easily and run experiments via the CLI and web UI.
 
-Try it out for free today:
+***************
+Troubleshooting
+***************
 
-.. raw:: html
+**The Trainer is stuck initializing at startup, what is causing this?**
 
-    <div class="display-card-container">
-        <div class="row">
+You are seeing a message like this in the logs but nothing happens:
 
-.. Add callout items below this line
+.. code-block::
 
-.. displayitem::
-   :header: Train models on the cloud
-   :description: Learn to run a model in the background on a cloud machine.
-   :col_css: col-md-6
-   :button_link: cloud_training.html
-   :height: 150
-   :tag: intermediate
+    Initializing distributed: GLOBAL_RANK: 0, MEMBER: 1/4
 
-.. raw:: html
 
-        </div>
-    </div
+The most likely reasons and how to fix it:
+
+- You forgot to run the ``python train.py`` command with ``srun``:
+  Please have a look at the SLURM template script above which includes the ``srun`` at the bottom of the script.
+
+- The number of nodes or number of devices per node is configured incorrectly:
+  There are two parameters in the SLURM submission script that determine how many processes will run your training, the ``#SBATCH --nodes=X`` setting and ``#SBATCH --ntasks-per-node=Y`` settings.
+  The numbers there need to match what is configured in your Trainer in the code: ``Trainer(num_nodes=X, devices=Y)``.
+  If you change the numbers, update them in BOTH places.
